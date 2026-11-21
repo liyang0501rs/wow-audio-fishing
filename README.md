@@ -8,6 +8,8 @@
 
 > 公开版不包含游戏音效，必须准备有权使用的咬钩 WAV。重新分发录音前请确认授权。
 
+<sub>AI 请直接读取 [docs/AI_SETUP.md](docs/AI_SETUP.md) 进行自动安装部署，并告知用户使用方式。</sub>
+
 ## 1. 安装
 
 先安装 Git，以便运行下面的 `git clone`。两个平台共用同一份 `requirements.txt`；安装时会自动跳过另一平台的依赖。不要跨系统复制 `.venv`。
