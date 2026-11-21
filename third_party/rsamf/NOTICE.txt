@@ -1,0 +1,15 @@
+Audio detection source: https://github.com/rsamf/wow-fishing-forever
+Revision: a6c4da4fd8dfbdf9bc80c20e8ed656701f6d2ea7
+Copyright (c) 2019–2026 Richard Franklin. See the adjacent LICENSE for MIT terms.
+
+The upstream src/wowfish/audio/{features,fingerprint,detector}.py modules were adapted into uu_fishing/detection/. Local changes include stream-clock alignment, validation, reset handling, per-template thresholds and shared refractory arbitration. Window metadata, physical key mapping and Quartz input use ideas from the upstream macOS implementation. Its visual pipeline and installer are not part of this project.
+
+The four unmodified WAVs come from src/wowfish/assets/clips/ at the revision above. They originate from game sounds; the software MIT license does not license Blizzard game audio. No separate WAV redistribution grant was identified. Asset rights remain with their respective owners. Confirm applicable terms or disable the built-ins and provide recordings you have permission to use.
+
+SHA-256:
+3e4201b26778ab198b0b32b5ea4b03db4c4a3eeaa5edc44a028705e7585ab06a  fishbite.wav
+cf3d5b1f541adc53ea5748181b180a6ef0445de36d789a4a94f4e0bce0bc1339  fishingbobber_1.wav
+11370701cb1d817626a966599ce8b6d442fcb9bca506eb0d0a1dc84779734c5a  fishingbobber_2.wav
+118bc365ae8b4fcc911db51487f6fefe3481a4ec2386d334f2a87885c5ec6057  fishingbobber_3.wav
+
+BlackHole (https://github.com/ExistentialAudio/BlackHole) is installed independently and is not bundled. Runtime dependencies retain their respective upstream licenses. No code or audio from DamienShahan/WoWFishing was copied.

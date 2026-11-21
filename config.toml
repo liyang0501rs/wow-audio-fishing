@@ -1,0 +1,40 @@
+# M4 macOS + 网易UU远程 + Better Fishing。所有相对路径以本文件所在目录为基准。
+# run 默认不发送按键；只有显式 --enable-input 才会开启真实输入。
+version = 1
+
+[audio]
+device = "BlackHole"           # 必须明确选虚拟输入；匹配多个设备会报错，不退回麦克风。
+capture_rate = 48000
+block_seconds = 0.1
+read_timeout = 3.0
+queue_seconds = 2.0
+
+[detector]
+threshold = 0.66              # 声谱相关分数，不是概率；降低会增加误报。
+onset_seconds = 0.6
+refractory_seconds = 3.0
+use_builtin = false
+# 公开仓库不含游戏音效；将有权使用的咬钩 WAV 放在这里。
+templates_dir = "user_templates"
+
+[target]
+app_contains = ""             # 留空时，GUI 在点击开始后锁定当前前台应用。
+title_contains = ""
+
+[input]
+action_key = '`'              # 物理反引号键（Mac ANSI 0x32）；可用 backtick / grave 别名。
+hold_seconds = 0.06
+start_delay_seconds = 0.0     # 0=不等待；test-key / --auto-start 的倒计时秒数。
+
+[timing]
+settle_seconds = 1.8          # 抛竿后屏蔽入水音效，再清空旧音频开始监听。
+bite_timeout_seconds = 31.0   # 每竿等待咬钩的总时长；按实际游戏版本调整。
+reel_delay_seconds = 0.0      # 0=识别到咬钩的同一块音频立即收杆。
+loot_wait_seconds = 1.0       # 收杆按键完成后至少等待这段时间再抛下一竿。
+retry_wait_seconds = 1.0
+
+[limits]
+max_reels = 0                # 0=不按收杆动作次数限制；动作不代表已获得物品。
+duration_minutes = 0.0       # 0=不按时长限制。
+max_consecutive_timeouts = 3 # 连续超时暂停，不无限盲按；F8重新开始。
+silence_timeout_seconds = 60.0 # 连续近静音暂停；0=关闭。不能据此判断UU是否断线。
