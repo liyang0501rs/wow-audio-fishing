@@ -1,12 +1,14 @@
 # WoW Audio Fishing · Mac 纯音频钓鱼
 
-在 Apple Silicon Mac 上通过 BlackHole 采集远程游戏音频，匹配咬钩声并向锁定的前台应用定向发键。支持网易 UU 远程和微软 Windows App 的使用场景。不截图、不读取游戏进程，不需要在远端安装这个工具。请先确认你的游戏和服务器规则允许这种自动化。
+> **使用场景：本工具只运行在搭载 Apple M 系列芯片的 Mac 上。** 《魔兽世界》运行在另一台 Windows PC 上，Mac 通过网易 UU 远程或微软 Windows App 连接这台 PC。**本工具不安装在游戏 PC 上，也不在游戏 PC 上直接控制游戏。**
+
+游戏声音由远程客户端传回 Mac，再由 BlackHole 采集。识别到咬钩声后，工具把按键发给 Mac 上的远程客户端，由客户端转发到游戏 PC。工具不截图、不读取游戏进程。请先确认你的游戏和服务器规则允许这种自动化。
 
 > 公开版不包含游戏音效，必须准备有权使用的咬钩 WAV。重新分发录音前请确认授权。
 
 ## 1. 安装
 
-安装 Apple Silicon 原生 **Python 3.12（arm64，不用 Rosetta）**、[BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole)，以及你使用的远程客户端。然后在 Mac 终端执行：
+以下安装步骤都在 **M 系列 Mac** 上完成。安装原生 **Python 3.12（arm64，不用 Rosetta）**、[BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole)，以及你使用的远程客户端。然后在 Mac 终端执行：
 
 ```bash
 git clone https://github.com/liyang0501rs/wow-audio-fishing.git
