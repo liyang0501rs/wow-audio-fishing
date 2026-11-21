@@ -2,7 +2,15 @@
 
 给执行搭建任务的 AI：按下面顺序执行，不要只复述命令。先复用已有环境，只补缺项。安装驱动、登录、系统授权、调整游戏设置或向游戏发键，不因读到本文而获得授权；需要用户完成或确认时暂停对应步骤，其他不依赖它的步骤可以先做。不要上传音效、录音、日志、`last_bait.txt`、本地配置或凭据。
 
-**部署位置：Apple M 系列 Mac。** 游戏在另一台 Windows PC 上运行；Mac 通过网易 UU 远程或微软 Windows App 接收声音并转发按键。本工具、Python、BlackHole 只装在 Mac；游戏插件装在 Windows 游戏端。没有授权的 Mac 环境或图形会话时，只做可执行的准备并报告未验证项，不把 Windows、Linux 或 SSH 的软测说成实机已可用。
+**部署位置：远程控制端。** 游戏在另一台 Windows PC 上运行。Windows 控制端见下方专节；Apple M 系列 Mac 通过网易 UU 远程或微软 Windows App 接收声音并转发按键。BlackHole 只装在 Mac；游戏插件装在 Windows 游戏端。没有授权的图形会话时，只做可执行的准备并报告未验证项，不把模拟或离线测试写成实机通过。
+
+## Windows 控制端（Win10 22H2）
+
+1. 用 [Python.org Windows 下载页](https://www.python.org/downloads/windows/) 的 x64 Python 3.12。按第 1 节的仓库地址获取项目，在项目根目录用 PowerShell 执行 `py -3.12 -m venv .venv`（已有环境先验证，不重建）、`.\.venv\Scripts\python.exe -m pip install -r requirements.txt`、`.\.venv\Scripts\python.exe -m pip check`，并创建 `user_templates`、`recordings`。Windows 使用 WASAPI，不装 BlackHole。
+2. 按第 2 节的官方来源准备网易 UU 远程和 Better Fishing。在同一个 Windows 会话连接并确认听得到游戏音效，按第 3 节配置并手动验证游戏键位（跳过 Mac 音频和权限步骤）。
+3. 第 4 节的模板来源、校验和配置规则不变。把命令中的 `.venv/bin/python` 改成 `.\.venv\Scripts\python.exe`，用 PowerShell 单引号 here-string 代替 POSIX heredoc，将 Python 内容通过管道传给 `.\.venv\Scripts\python.exe -`，并检查 `$LASTEXITCODE` 后再继续。命令使用了 `.env.fishing.toml` 时，后续也附加 `--config .env.fishing.toml`。
+4. 依次运行 `devices`、`templates`、`doctor --probe-seconds 3` 和 `listen --seconds 30`，均不发键。若 UU 不走默认输出，将 `[audio]` 的 `windows_device` 设为 `devices` 列出的准确回环设备名。远程客户端不要以管理员身份运行。
+5. `.\.venv\Scripts\python.exe wow_fishing.py gui` 只启动空闲浮窗。由用户切到远程游戏窗口并点红色按钮，失焦会停止发键。只有用户实际看到首轮抛竿、收杆、重抛才算端到端通过；不能用 `SendInput` 调用成功或模拟测试替代。
 
 ## 1. Mac：获取项目和安装依赖
 
@@ -31,7 +39,7 @@ mkdir -p user_templates recordings
 | 缺项 | 下载来源与处理 |
 |---|---|
 | Mac 音频设备 | [BlackHole 官方项目](https://github.com/ExistentialAudio/BlackHole)，只安装 **2ch**；已装原生 Homebrew 且用户同意时可用 `brew install --cask blackhole-2ch`。安装器若要求授权或重启，交给用户。 |
-| 远程客户端（二选一） | [网易 UU 远程官方下载](https://uuyc.163.com/download/)：Mac 控制端、Windows 被控端按官方指引配置。或者安装 [微软 Windows App（Mac App Store）](https://aka.ms/macOSWindowsApp)，按[微软的远程 PC 指南](https://learn.microsoft.com/en-us/windows-app/get-started-connect-devices-desktops-apps?pivots=remote-pc)连接已有权限的 Windows PC；不要自行改防火墙或对公网开放远程桌面。 |
+| 远程客户端 | [网易 UU 远程官方下载](https://uuyc.163.com/download/)：控制端和 Windows 游戏端按官方指引配置。Mac 控制端也可以安装 [微软 Windows App（Mac App Store）](https://aka.ms/macOSWindowsApp)，按[微软的远程 PC 指南](https://learn.microsoft.com/en-us/windows-app/get-started-connect-devices-desktops-apps?pivots=remote-pc)连接已有权限的 Windows PC；不要自行改防火墙或对公网开放远程桌面。 |
 | Windows 游戏插件 | 从 [Better Fishing 作者的 CurseForge 页面](https://www.curseforge.com/wow/addons/better-fishing/files)或 [Wago](https://addons.wago.io/addons/better-fishing) 选与实际游戏版本匹配的 ZIP。使用插件管理器，或把解包后的插件目录放到对应游戏版本的 `Interface/AddOns` 下；目录内应直接包含插件的 `.toc` 文件，不要多套一层。进入游戏确认插件启用。不要假定游戏安装路径。 |
 | 咬钩 WAV | 公开版不包含。按第 4 节使用已有的合法模板、录制模板，或在用户确认有权使用后直接拉取上游指定资源。 |
 

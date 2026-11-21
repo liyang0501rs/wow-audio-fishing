@@ -22,6 +22,7 @@ class AudioConfig:
     block_seconds: float = 0.1
     read_timeout: float = 3.0
     queue_seconds: float = 2.0
+    windows_device: str = "default"
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,7 @@ def _string(value: Any, name: str, *, empty: bool = True) -> None:
 def validate_config(cfg: AppConfig) -> AppConfig:
     a, d, i, t, limits = cfg.audio, cfg.detector, cfg.input, cfg.timing, cfg.limits
     _string(a.device, "audio.device", empty=False)
+    _string(a.windows_device, "audio.windows_device", empty=False)
     _number(a.capture_rate, "audio.capture_rate", 16000, 192000, integer=True)
     _number(a.block_seconds, "audio.block_seconds", 0.02, 0.5)
     _number(a.read_timeout, "audio.read_timeout", 0.5, 30)

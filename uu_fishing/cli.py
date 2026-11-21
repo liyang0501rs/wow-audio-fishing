@@ -42,12 +42,22 @@ def _detector(cfg: AppConfig):
                          refractory_seconds=cfg.detector.refractory_seconds)
 
 
+def _desktop_backend():
+    if sys.platform == "darwin":
+        from . import macos
+        return macos
+    if sys.platform == "win32":
+        from . import windows_input
+        return windows_input
+    raise RuntimeError("窗口控制仅支持 macOS 和 Windows")
+
+
 def _source(cfg: AppConfig):
     from .audio import LiveAudioSource
     return LiveAudioSource(device=cfg.audio.device, capture_rate=cfg.audio.capture_rate,
                            sample_rate=22050, block_seconds=cfg.audio.block_seconds,
                            read_timeout=cfg.audio.read_timeout,
-                           queue_seconds=cfg.audio.queue_seconds)
+                           queue_seconds=cfg.audio.queue_seconds, windows_device=cfg.audio.windows_device)
 
 
 def _finite(value: float, name: str, lo: float, hi: float) -> float:
@@ -57,8 +67,7 @@ def _finite(value: float, name: str, lo: float, hi: float) -> float:
 
 
 def _choose_window(args: argparse.Namespace, cfg: AppConfig):
-    from .macos import list_windows
-    windows = list_windows()
+    windows = _desktop_backend().list_windows()
     if getattr(args, "window_id", None) is not None:
         found = [window for window in windows if window.window_id == args.window_id]
     else:
@@ -75,11 +84,14 @@ def _choose_window(args: argparse.Namespace, cfg: AppConfig):
 
 
 def _focused_target(cfg: AppConfig):
-    from .macos import accessibility_status, focused_window_info
-    target = focused_window_info()
+    desktop = _desktop_backend()
+    target = desktop.focused_window_info()
     if target is None:
-        trusted, detail = accessibility_status()
-        hint = "macOS 未提供可核验的前台窗口；请先切到目标窗口再启动。" if trusted else detail
+        hint = "请先切到目标远程窗口再启动。"
+        if sys.platform == "darwin":
+            trusted, detail = desktop.accessibility_status()
+            if not trusted:
+                hint = detail
         raise RuntimeError(f"无法证实当前前台窗口的 ID 和 PID；未发键。{hint}")
     if (cfg.target.app_contains.casefold() not in target.app_name.casefold()
             or cfg.target.title_contains.casefold() not in target.title.casefold()):
@@ -120,15 +132,20 @@ def cmd_devices(args: argparse.Namespace) -> int:
     for device in devices:
         print(f"{device.name} | id={device.id} | 输入通道={device.channels}")
     if not devices:
+        if sys.platform == "win32":
+            raise RuntimeError("没有可用的 WASAPI 输出回环；请检查本机的声音输出设备")
         raise RuntimeError("没有可用输入设备；请在 Mac 安装 BlackHole 2ch 并重启相关应用。")
-    print("配置 audio.device 使用唯一名称；程序不会自动退回物理麦克风。")
+    if sys.platform == "win32":
+        print('audio.windows_device 默认为 "default"；可指定唯一回环名称或以上编号，不使用麦克风。')
+    else:
+        print("配置 audio.device 使用唯一名称；程序不会自动退回物理麦克风。")
     return 0
 
 
 def cmd_windows(args: argparse.Namespace) -> int:
-    from .macos import accessibility_status, focused_window_info, list_windows
-    focus = focused_window_info()
-    windows = list_windows()
+    desktop = _desktop_backend()
+    focus = desktop.focused_window_info()
+    windows = desktop.list_windows()
     identity = (focus.window_id, focus.pid) if focus else None
     marked = False
     for window in windows:
@@ -138,9 +155,11 @@ def cmd_windows(args: argparse.Namespace) -> int:
         print(f"{flag} id={window.window_id:<8} pid={window.pid:<7} {window.app_name} | {window.title}")
     if marked:
         print("* = 本次核验的前台窗口")
-    else:
-        trusted, detail = accessibility_status()
+    elif sys.platform == "darwin":
+        trusted, detail = desktop.accessibility_status()
         print(f"[WARN] 未核验到前台窗口。{'AX 检查已通过，但找不到一致的窗口身份。' if trusted else detail}")
+    else:
+        print("[WARN] 未核验到可用的前台窗口。")
     print("只列窗口，不发键。")
     if not windows:
         print("未能列出窗口：请检查窗口是否可见以及系统隐私权限。")
@@ -178,20 +197,35 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"[FAIL] 模板: {exc}")
         ok = False
-    if sys.platform != "darwin":
-        print("[INFO] 当前不是 macOS；只支持离线 WAV 识别、配置和单元测试，不会尝试操作当前桌面。")
+    if sys.platform not in ("darwin", "win32"):
+        print("[INFO] 当前平台只支持离线 WAV 识别、配置和单元测试。")
         return 2
+    if sys.platform == "darwin":
+        ok = _diagnose_macos(cfg, args.request_permissions) and ok
+    else:
+        print("[INFO] Windows 使用 WASAPI 输出回环，只检查采音，不请求发键权限。")
+    if not args.no_audio:
+        ok = _probe_audio(cfg, args.probe_seconds) and ok
+    print("不会发键；选定设备上的其他应用声音可能混入。")
+    print("doctor 只检查，不启动运行，也不会驻留。")
+    if ok and sys.platform == "darwin":
+        print("要启动真实循环，在同一 Mac 终端运行：.venv/bin/python wow_fishing.py run --enable-input --minutes 3 --max-reels 3")
+    return 0 if ok else 2
+
+
+def _diagnose_macos(cfg: AppConfig, request_permissions: bool) -> bool:
+    ok = True
     if platform.machine() != "arm64":
         print("[WARN] 当前 Python 不是原生 arm64；M4 建议使用原生 Python 3.12，避免 Rosetta 混装依赖。")
     from .macos import accessibility_status, input_monitoring_status, keyboard_post_status, list_windows
-    if args.request_permissions:
+    if request_permissions:
         print("[INFO] 正在向系统请求权限；不保证弹窗或立即生效。设置后请重开终端，运行 doctor --no-audio 复查。")
     for name, check, required in (("前台窗口控制（AX）", accessibility_status, True),
                                   ("Quartz 发键权限", keyboard_post_status, True),
                                   ("F8/F9 输入监控（仅 --hotkeys）", input_monitoring_status, False)):
         missing = "FAIL" if required else "INFO"
         try:
-            permitted, detail = check(request=args.request_permissions and required)
+            permitted, detail = check(request=request_permissions and required)
             print(f"[{'OK' if permitted else missing}] {name}: {detail}")
             ok = ok and (permitted or not required)
         except (OSError, RuntimeError) as exc:
@@ -202,29 +236,28 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"[{'OK' if choices else 'WARN'}] 符合应用筛选的窗口: {len(choices)}；详见 windows 命令")
     except (OSError, RuntimeError) as exc:
         print(f"[WARN] 窗口枚举: {exc}")
-    if not args.no_audio:
-        try:
-            with _source(cfg) as source:
-                peak = -120.0
-                start = time.monotonic()
-                while time.monotonic() - start < args.probe_seconds:
-                    chunk = source.read()
-                    rms = float(np.sqrt(np.mean(np.asarray(chunk.samples, dtype=np.float64) ** 2)))
-                    peak = max(peak, 20 * math.log10(rms + 1e-12))
-                print(f"[OK] 音频输入: {source.name}；探测最大块电平 {peak:.1f} dBFS")
-                if peak < -75:
-                    print("[WARN] 输入近静音。请让 UU 播放声音，检查多输出设备是否包含 BlackHole。静音不等于断流。")
-                elif peak < -35:
-                    print("[WARN] 本次短时探测电平较低；可能只是未播放咬钩声。"
-                          "这不是识别失败阈值，请在实际咬钩时录音验证，不要仅据此调整音量或检测阈值。")
-        except (OSError, ValueError, RuntimeError) as exc:
-            print(f"[FAIL] 音频: {exc}")
-            ok = False
-    print("不会发键；BlackHole 可能混入其他应用声音，锁定窗口不会隔离音频。")
-    print("doctor 只检查，不启动运行，也不会驻留。")
-    if ok:
-        print("要启动真实循环，在同一 Mac 终端运行：.venv/bin/python wow_fishing.py run --enable-input --minutes 3 --max-reels 3")
-    return 0 if ok else 2
+    return ok
+
+
+def _probe_audio(cfg: AppConfig, seconds: float) -> bool:
+    try:
+        with _source(cfg) as source:
+            peak = -120.0
+            start = time.monotonic()
+            while time.monotonic() - start < seconds:
+                chunk = source.read()
+                rms = float(np.sqrt(np.mean(np.asarray(chunk.samples, dtype=np.float64) ** 2)))
+                peak = max(peak, 20 * math.log10(rms + 1e-12))
+            print(f"[OK] 音频输入: {source.name}；探测最大块电平 {peak:.1f} dBFS")
+            if peak < -75:
+                print("[WARN] 输入近静音。请播放远程游戏声音，检查是否输出到选定设备。静音不等于断流。")
+            elif peak < -35:
+                print("[WARN] 本次短时探测电平较低；可能只是未播放咬钩声。"
+                      "这不是识别失败阈值，请在实际咬钩时录音验证，不要仅据此调整音量或检测阈值。")
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"[FAIL] 音频: {exc}")
+        return False
+    return True
 
 
 def cmd_record(args: argparse.Namespace) -> int:
@@ -235,7 +268,7 @@ def cmd_record(args: argparse.Namespace) -> int:
     if output.exists() and not args.force:
         raise FileExistsError(f"文件已存在，未覆盖: {output}（显式 --force 才可覆盖）")
     delay = cfg.input.start_delay_seconds if args.delay is None else _finite(args.delay, "倒计时", 0, 30)
-    print("仅录制 BlackHole，不发送任何按键。请手动抛竿，录下咬钩声。")
+    print("仅录制选定的音频源，不发送任何按键。请手动抛竿，录下咬钩声。")
     _countdown(delay)
     # Fail before recording if the destination directory cannot be created.
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -344,34 +377,39 @@ def cmd_listen(args: argparse.Namespace) -> int:
 
 
 def cmd_test_key(args: argparse.Namespace) -> int:
-    from .macos import MacKeyboard, frontmost_app_info
+    desktop = _desktop_backend()
+    mac = sys.platform == "darwin"
+    if args.system_event and not mac:
+        raise ValueError("--system-event 是 macOS 专用测试选项；Windows 使用经前台校验的 SendInput")
     cfg = _cfg(args)
     target = _choose_window(args, cfg) if args.window_id is not None else None
     expected_app = args.frontmost_app.strip() if args.frontmost_app is not None else None
     if expected_app == "" or (args.system_event and not expected_app):
         raise ValueError("系统事件测试必须用 --frontmost-app 指定预期的前台应用名称")
-    mode = "系统事件" if args.system_event else "定向发键"
+    mode = ("系统事件" if args.system_event else "定向发键") if mac else "前台发键"
     if not args.send:
         label = expected_app or (target.label if target else "启动时核验的前台窗口")
         print(f"预览：{mode}｜{label}｜{cfg.input.action_key!r}。未发送；加 --send 才执行。")
         return 0
-    delay = cfg.input.start_delay_seconds if args.delay is None else _finite(args.delay, "倒计时", 0, 30)
+    default_delay = cfg.input.start_delay_seconds if mac else (cfg.input.start_delay_seconds or 3.0)
+    delay = default_delay if args.delay is None else _finite(args.delay, "倒计时", 0, 30)
     print("仅测试一次完整按下/松开；不会启动钓鱼循环。请松开所有修饰键。")
     _countdown(delay)
     if expected_app:
-        target = frontmost_app_info()
+        target = desktop.frontmost_app_info() if mac else desktop.focused_window_info()
         if target is None or target.app_name.casefold() != expected_app.casefold():
             actual = target.app_name if target else "无法确认"
             raise RuntimeError(f"预期前台为 {expected_app}，实际为 {actual}；未发键")
     elif target is None:
         target = _focused_target(cfg)
     print(f"{mode}｜目标：{target.app_name}")
-    keyboard = MacKeyboard(target, key=cfg.input.action_key, hold_seconds=cfg.input.hold_seconds)
+    keyboard_type = desktop.MacKeyboard if mac else desktop.WindowsKeyboard
+    keyboard = keyboard_type(target, key=cfg.input.action_key, hold_seconds=cfg.input.hold_seconds)
     if args.system_event:
         keyboard.press(targeted=False, allow_app_system_event=True)
     else:
         keyboard.press(targeted=True)
-    print("已向 macOS 提交一次按键；请观察远端是否响应。")
+    print("已向系统提交一次按键；请观察远端是否响应。")
     return 0
 
 
@@ -412,8 +450,11 @@ def _listen_without_target(source, detector, controls, emit) -> None:
 def cmd_run(args: argparse.Namespace, *, controls=None, show_button=None) -> int:
     from .bait import bait_history
     from .engine import ActionBlocked, Controls, FishingEngine
-    from .macos import AppInfo, FocusError, MacKeyboard, frontmost_app_info, is_focused
-    from .overlay import StatusOverlay
+    desktop = _desktop_backend()
+    mac = sys.platform == "darwin"
+    keyboard_type = desktop.MacKeyboard if mac else desktop.WindowsKeyboard
+    if not mac and args.hotkeys:
+        raise ValueError("Windows 不支持 F8/F9 全局热键；用浮窗按钮或 Ctrl+C 停止")
     cfg = _cfg(args)
     select_at_deadline = args.window_id is None
     target = None if select_at_deadline else _choose_window(args, cfg)
@@ -421,15 +462,15 @@ def cmd_run(args: argparse.Namespace, *, controls=None, show_button=None) -> int
     auto_start = select_at_deadline or args.auto_start or not args.hotkeys
     if controls is None:
         controls = Controls(paused=real_input and not auto_start)
-    keyboard = None  # Without --enable-input there is no path to a CGEvent.
-    bait_keyboards: dict[str, MacKeyboard] = {}
+    keyboard = None  # Without --enable-input no keyboard backend is used.
+    bait_keyboards = {}
     bait = None
     target_problem = None
     log_dir = getattr(args, "log_dir", None) or PROJECT_ROOT / "logs"
     log = SessionLog(log_dir)
     path = log.path
     hotkeys = None
-    mode = "定向发键" if real_input else "模拟，不发键"
+    mode = ("定向发键" if mac else "前台发键") if real_input else "模拟，不发键"
     _monitor_line(f"{mode}｜日志：{path}")
     if args.hotkeys:
         _monitor_line("F8 启停｜F9 退出")
@@ -473,6 +514,8 @@ def cmd_run(args: argparse.Namespace, *, controls=None, show_button=None) -> int
             elif event == "state" and data["state"] in ("ready", "resync", "retry_wait"):
                 show_button("orange")
             return
+        if hud is None:
+            return
         if event == "action":
             if data["action"] == "cast":
                 hud.show("等待上钩")
@@ -486,14 +529,14 @@ def cmd_run(args: argparse.Namespace, *, controls=None, show_button=None) -> int
             elif data["state"] in ("ready", "resync", "retry_wait"):
                 hud.show("等待抛竿")
 
-    def send_key(keyboard: MacKeyboard | None, on_submitted=None) -> None:
+    def send_key(keyboard, on_submitted=None) -> None:
         if controls.stop_event.is_set() or controls.snapshot()[0]:
             raise ActionBlocked("已暂停/停止")
         if keyboard is not None:
             try:
                 keyboard.press(targeted=True, cancelled=controls.stop_event.is_set,
                                on_submitted=on_submitted)
-            except FocusError as exc:
+            except desktop.FocusError as exc:
                 raise ActionBlocked(str(exc)) from exc
 
     def action() -> None:
@@ -505,7 +548,7 @@ def cmd_run(args: argparse.Namespace, *, controls=None, show_button=None) -> int
     phase = "F8/F9 热键"
     try:
         log.write("startup", version=__version__, real_input=real_input, auto_start=auto_start,
-                  hotkeys=args.hotkeys, targeted=real_input)
+                  hotkeys=args.hotkeys, targeted=mac and real_input)
         # If explicitly requested, start the listener before opening audio.
         if args.hotkeys:
             from .hotkeys import GlobalHotkeys
@@ -516,14 +559,17 @@ def cmd_run(args: argparse.Namespace, *, controls=None, show_button=None) -> int
         phase = "状态条"
         from contextlib import ExitStack
         with ExitStack() as stack:
-            hud = stack.enter_context(StatusOverlay()) if show_button is None else None
+            hud = None
+            if mac and show_button is None:
+                from .overlay import StatusOverlay
+                hud = stack.enter_context(StatusOverlay())
             if show_button is not None and select_at_deadline:
                 phase = "锁定前台目标"
                 try:
-                    if cfg.target.title_contains:
+                    if not mac or cfg.target.title_contains:
                         target = _focused_target(cfg)
                     else:
-                        front = frontmost_app_info()
+                        front = desktop.frontmost_app_info()
                         if front is None:
                             raise RuntimeError("无法确认前台应用")
                         if cfg.target.app_contains.casefold() not in front.app_name.casefold():
@@ -535,12 +581,17 @@ def cmd_run(args: argparse.Namespace, *, controls=None, show_button=None) -> int
                     _monitor_line("目标未确认｜仅监听，不发键")
             phase = "加载音效模板"
             detector = _detector(cfg)
-            phase = "BlackHole 音频"
+            phase = "实时音频"
             source = stack.enter_context(_source(cfg))
             source.read()  # Verify actual frame delivery, not just the existence of a device.
             if auto_start:
                 phase = "启动倒计时"
-                if not _countdown(0.0 if show_button is not None else cfg.input.start_delay_seconds,
+                delay = cfg.input.start_delay_seconds
+                if not mac and real_input and not delay:
+                    delay = 3.0
+                if getattr(args, "delay", None) is not None:
+                    delay = _finite(args.delay, "倒计时", 0, 30)
+                if not _countdown(0.0 if show_button is not None else delay,
                                   controls.stop_event.is_set, consume=source.read,
                                   show=hud.show if hud is not None else None):
                     return 0
@@ -558,20 +609,20 @@ def cmd_run(args: argparse.Namespace, *, controls=None, show_button=None) -> int
                 phase = "关闭音频和状态条"
                 return 0
             if real_input:
-                keyboard = MacKeyboard(target, key=cfg.input.action_key, hold_seconds=cfg.input.hold_seconds)
-                bait_keyboards = {key: MacKeyboard(target, key=key, hold_seconds=cfg.input.hold_seconds)
+                keyboard = keyboard_type(target, key=cfg.input.action_key, hold_seconds=cfg.input.hold_seconds)
+                bait_keyboards = {key: keyboard_type(target, key=key, hold_seconds=cfg.input.hold_seconds)
                                   for key in ("0", "9")}
                 bait = (bait_history(cfg.base_dir / "last_bait.txt"), bait_action)
             _monitor_line(f"目标：{target.app_name}")
             if real_input and not auto_start:
                 _monitor_line("切回目标窗口，按 F8 开始")
             log.write("run_start", version=__version__, real_input=real_input,
-                      target=vars(target), target_scope="app" if isinstance(target, AppInfo) else "window",
+                      target=vars(target), target_scope="app" if mac and isinstance(target, desktop.AppInfo) else "window",
                       config=cfg.to_dict())
             def preview_score(score: float) -> None:
                 show_button(score=score)
 
-            engine = FishingEngine(cfg, source, detector, action, lambda: is_focused(target),
+            engine = FishingEngine(cfg, source, detector, action, lambda: desktop.is_focused(target),
                                     controls, emit=emit, bait=bait,
                                     preview_score=preview_score if show_button is not None else None)
             phase = "钓鱼循环"
@@ -592,7 +643,12 @@ def cmd_run(args: argparse.Namespace, *, controls=None, show_button=None) -> int
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
-    from .button_ui import run_button_ui
+    if sys.platform == "win32":
+        from .windows_ui import run_button_ui
+    elif sys.platform == "darwin":
+        from .button_ui import run_button_ui
+    else:
+        raise RuntimeError("浮窗仅支持 macOS 和 Windows")
 
     def run_session(controls, show):
         # The button click is the opt-in; merely starting `gui` opens no device.
@@ -607,7 +663,7 @@ def cmd_gui(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="M4 macOS + UU 远程 + Better Fishing 纯音频钓鱼")
+    parser = argparse.ArgumentParser(description="macOS / Windows 远程纯音频钓鱼")
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--config", type=Path, default=None, help="TOML；相对路径以该文件目录为基准")
     subs = parser.add_subparsers(dest="command", required=True)
@@ -619,14 +675,14 @@ def build_parser() -> argparse.ArgumentParser:
         return sub
 
     command("config", "验证并显示解析后的配置（不写文件）", cmd_config)
-    command("devices", "列出 Mac 音频输入", cmd_devices)
-    command("windows", "列出 Mac 窗口与明确前台标记", cmd_windows)
+    command("devices", "列出当前平台的采音设备", cmd_devices)
+    command("windows", "列出窗口与明确前台标记", cmd_windows)
     command("templates", "检查内置/自定义音效模板", cmd_templates)
-    doctor = command("doctor", "检查环境/权限/模板/BlackHole，不发键", cmd_doctor)
+    doctor = command("doctor", "检查环境、模板和采音，不发键", cmd_doctor)
     doctor.add_argument("--request-permissions", action="store_true", help="请求系统显示权限提示，不自动授权")
     doctor.add_argument("--no-audio", action="store_true")
     doctor.add_argument("--probe-seconds", type=float, default=1.0)
-    record = command("record", "录制 BlackHole 为 PCM WAV，不发键", cmd_record)
+    record = command("record", "录制选定音频为 PCM WAV，不发键", cmd_record)
     record.add_argument("--out", type=Path, required=True)
     record.add_argument("--seconds", type=float, default=15)
     record.add_argument("--delay", type=float, default=None)
@@ -655,8 +711,9 @@ def build_parser() -> argparse.ArgumentParser:
     mode = run.add_mutually_exclusive_group()
     mode.add_argument("--enable-input", action="store_true")
     mode.add_argument("--dry-run", action="store_true", help="显式指定不发送按键（默认）")
-    run.add_argument("--targeted", action="store_true", help="兼容旧命令；现在始终定向发键")
+    run.add_argument("--targeted", action="store_true", help="兼容旧命令；始终核验前台目标")
     run.add_argument("--auto-start", action="store_true", help="与 --hotkeys、--window-id 一起使用时，倒计时开始而不是等 F8")
+    run.add_argument("--delay", type=float, help="启动前等待秒数；GUI 不等待")
     keys = run.add_mutually_exclusive_group()
     keys.add_argument("--hotkeys", action="store_true", help="可选：启用 F8/F9（需要输入监控）")
     keys.add_argument("--no-hotkeys", dest="hotkeys", action="store_false", help="不监听全局快捷键（默认），Ctrl+C 退出")

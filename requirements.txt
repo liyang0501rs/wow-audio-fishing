@@ -1,7 +1,8 @@
-# Use native arm64 Python 3.12 on an M-series Mac.
+# Use Python 3.12 (arm64 on M-series Macs, x64 on Windows).
 numpy>=1.26,<3
 # The read-only floating status panel uses native AppKit, only on macOS.
 pyobjc-framework-Cocoa>=10,<14; sys_platform == "darwin"
 # CoreAudio live input and global F8/F9 controls are only needed on macOS.
 soundcard>=0.4.3,<1; sys_platform == "darwin"
 pynput>=1.7.6,<2; sys_platform == "darwin"
+PyAudioWPatch==0.2.12.9; sys_platform == "win32"

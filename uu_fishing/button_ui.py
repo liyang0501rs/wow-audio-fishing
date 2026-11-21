@@ -1,4 +1,4 @@
-"""A single nonactivating macOS start/stop button with a platform-neutral controller."""
+"""Shared floating-button behavior and its native AppKit renderer."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -19,6 +19,41 @@ class ButtonUpdate(Protocol):
 _RunSession = Callable[[Controls, ButtonUpdate], None]
 _ACTIVE_COLORS = ("orange", "green")
 _SCORE_INTERVAL = 0.2
+_BUTTON_SIZE = 60
+_FONT_SIZE = 48
+
+
+def _button_position(left, top, width, height):
+    size = _BUTTON_SIZE
+    return (left + max(0, min(width - size, (width - size) // 2 + 4 * size)),
+            top + max(0, (height - size) // 2))
+
+
+class _ButtonGesture:
+    """One click/drag distinction for both native renderers."""
+
+    def __init__(self):
+        self.origin: tuple[float, float, float, float] | None = None
+        self.dragged = False
+
+    def press(self, x, y, left, top) -> None:
+        self.origin = (x, y, left, top)
+        self.dragged = False
+
+    def move(self, x, y) -> tuple[float, float] | None:
+        if self.origin is None:
+            return None
+        x0, y0, left, top = self.origin
+        dx, dy = x - x0, y - y0
+        if self.dragged or dx * dx + dy * dy >= 16:
+            self.dragged = True
+            return left + dx, top + dy
+        return None
+
+    def release(self, inside: bool) -> bool:
+        clicked = self.origin is not None and not self.dragged and inside
+        self.origin = None
+        return clicked
 
 
 class _Session:
@@ -151,30 +186,23 @@ def _button_class(ak, objc):
             panel = self.window()
             point = panel.convertPointToScreen_(event.locationInWindow())
             origin = panel.frame().origin
-            self._press_origin = (point.x, point.y, origin.x, origin.y)
-            self._did_drag = False
+            self._gesture.press(point.x, point.y, origin.x, origin.y)
 
         @objc.python_method
         def _move_for_event(self, event):
             panel = self.window()
             point = panel.convertPointToScreen_(event.locationInWindow())
-            x, y, left, bottom = self._press_origin
-            dx, dy = point.x - x, point.y - y
-            if self._did_drag or dx * dx + dy * dy >= 16:
-                self._did_drag = True
-                panel.setFrameOrigin_((left + dx, bottom + dy))
+            position = self._gesture.move(point.x, point.y)
+            if position is not None:
+                panel.setFrameOrigin_(position)
 
         def mouseDragged_(self, event):
-            if getattr(self, "_press_origin", None) is not None:
-                self._move_for_event(event)
+            self._move_for_event(event)
 
         def mouseUp_(self, event):
-            if getattr(self, "_press_origin", None) is None:
-                return
             self._move_for_event(event)
-            self._press_origin = None
             release = self.convertPoint_fromView_(event.locationInWindow(), None)
-            if not self._did_drag and ak.NSPointInRect(release, self.bounds()):
+            if self._gesture.release(ak.NSPointInRect(release, self.bounds())):
                 self.uuClick_(self)
 
         @objc.python_method
@@ -203,7 +231,7 @@ def _button_class(ak, objc):
             path.stroke()
             if number:
                 bounds = self.bounds()
-                font_size = 48
+                font_size = _FONT_SIZE
                 font = ak.NSFont.monospacedDigitSystemFontOfSize_weight_
                 attributes = {
                     ak.NSFontAttributeName: font(font_size, ak.NSFontWeightBold),
@@ -229,9 +257,8 @@ def _make_panel(ak, objc, controller: _ButtonController):
     if screen is None:
         raise RuntimeError("没有可用的 macOS 桌面显示器")
     rect = screen.visibleFrame()
-    size = 60
-    frame = ((rect.origin.x + (rect.size.width - size) / 2 + 4 * size,
-              rect.origin.y + (rect.size.height - size) / 2), (size, size))
+    size = _BUTTON_SIZE
+    frame = (_button_position(rect.origin.x, rect.origin.y, rect.size.width, rect.size.height), (size, size))
     panel = ak.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         frame, ak.NSWindowStyleMaskBorderless | ak.NSWindowStyleMaskNonactivatingPanel,
         ak.NSBackingStoreBuffered, False,
@@ -249,6 +276,7 @@ def _make_panel(ak, objc, controller: _ButtonController):
 
     button = _button_class(ak, objc).alloc().initWithFrame_(((0, 0), (size, size)))
     button._controller = controller
+    button._gesture = _ButtonGesture()
     button._display = controller.poll()
     button.setTitle_("")
     button.setBordered_(False)

@@ -1,4 +1,4 @@
-"""Fail-closed macOS input capture, with lazy SoundCard loading.
+"""Shared live audio pipeline for CoreAudio input and Windows WASAPI loopback.
 
 BlackHole is an input device, not a request to fall back to the default mic.
 No native recorder buffer size is specified on CoreAudio. Only the public
@@ -7,6 +7,7 @@ happen in the capture thread; close has a bounded join even if a driver hangs.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib
 import math
@@ -14,7 +15,7 @@ import platform
 import queue
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -30,6 +31,13 @@ class AudioDevice:
     id: str
     name: str
     channels: int
+
+
+@dataclass(frozen=True)
+class _Capture:
+    name: str
+    rate: int
+    read: Callable[[], tuple[np.ndarray, float] | None]
 
 
 def _soundcard() -> Any:
@@ -57,8 +65,40 @@ def _microphones(soundcard: Any) -> list[Any]:
 
 
 def list_devices() -> list[AudioDevice]:
-    """List real input devices; live capture is only available on macOS."""
-    return [_describe(mic) for mic in _microphones(_soundcard())]
+    """List capture candidates on the current platform."""
+    system = platform.system()
+    if system == "Windows":
+        from .wasapi import list_loopbacks
+        return list_loopbacks()
+    if system == "Darwin":
+        return [_describe(mic) for mic in _microphones(_soundcard())]
+    raise AudioError("实时采音仅支持 macOS 或 Windows；可用 WAV 离线识别")
+
+
+def _select_device(devices: list[AudioDevice], selector: str, hint: str, *, partial_id: bool = False) -> AudioDevice:
+    requested = selector.casefold()
+    exact = [d for d in devices if requested in (d.id.casefold(), d.name.casefold())]
+    matches = exact or [d for d in devices if requested in d.name.casefold()
+                        or (partial_id and requested in d.id.casefold())]
+    if len(matches) != 1:
+        names = ", ".join(f"{d.name} [{d.id}]" for d in matches or devices) or "无"
+        reason = "匹配不唯一" if matches else "没有找到"
+        raise AudioError(f"{selector!r}：{reason}（{names}）。{hint}")
+    return matches[0]
+
+
+@contextmanager
+def _open_coreaudio(device: str, rate: int, block_seconds: float):
+    microphones = _microphones(_soundcard())
+    candidates = [_describe(mic) for mic in microphones]
+    selected = _select_device(candidates, device, "确认 BlackHole 2ch 已安装并接收游戏声音；不会回退到麦克风。",
+                              partial_id=True)
+    frames = max(1, round(rate * block_seconds))
+    # Do not force a device-level buffer size on CoreAudio.
+    with microphones[candidates.index(selected)].recorder(samplerate=rate) as recorder:
+        def read():
+            return recorder.record(numframes=frames), time.monotonic()
+        yield _Capture(selected.name, rate, read)
 
 
 class _StreamingResampler:
@@ -109,7 +149,7 @@ def _positive(value: float, name: str) -> float:
 
 
 class LiveAudioSource:
-    """Bounded, non-replaying BlackHole capture source.
+    """Bounded, non-replaying live capture source.
 
     A queue overflow, invalid/empty frame, failed device, or read timeout poisons
     the source permanently: old queued audio is discarded and subsequent reads
@@ -124,19 +164,23 @@ class LiveAudioSource:
         block_seconds: float = 0.1,
         read_timeout: float = 3.0,
         queue_seconds: float = 2.0,
+        *,
+        windows_device: str = "default",
     ) -> None:
         if not isinstance(device, str) or not device.strip():
             raise ValueError("device must be a nonempty device name or id")
+        if not isinstance(windows_device, str) or not windows_device.strip():
+            raise ValueError("windows_device must be 'default', a loopback name, or its index")
         for rate, label in ((capture_rate, "capture_rate"), (sample_rate, "sample_rate")):
             if isinstance(rate, bool) or not isinstance(rate, (int, np.integer)) or rate <= 0:
                 raise ValueError(f"{label} must be a positive integer")
         self.device = device
+        self.windows_device = windows_device
         self.capture_rate = int(capture_rate)
         self.sample_rate = int(sample_rate)
         self.block_seconds = _positive(block_seconds, "block_seconds")
         self.read_timeout = _positive(read_timeout, "read_timeout")
         self.queue_seconds = _positive(queue_seconds, "queue_seconds")
-        self._frames = max(1, round(self.capture_rate * self.block_seconds))
         self._queue: queue.Queue[AudioChunk] = queue.Queue(maxsize=max(1, math.ceil(self.queue_seconds / self.block_seconds)))
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -144,7 +188,7 @@ class LiveAudioSource:
         self._thread: threading.Thread | None = None
         self._error: AudioError | None = None
         self._closed = False
-        self._name = device
+        self._name = windows_device if platform.system() == "Windows" else device
 
     @property
     def name(self) -> str:
@@ -174,41 +218,34 @@ class LiveAudioSource:
     def _start(self) -> None:
         self._check()
         if self._thread is None:
-            soundcard = _soundcard()
-            microphones = _microphones(soundcard)
-            requested = self.device.casefold()
-            exact = [mic for mic in microphones if requested in (_describe(mic).id.casefold(), _describe(mic).name.casefold())]
-            matches = exact or [mic for mic in microphones if requested in _describe(mic).name.casefold() or requested in _describe(mic).id.casefold()]
-            if not matches:
-                names = ", ".join(_describe(mic).name for mic in microphones) or "none"
-                raise AudioError(
-                    f"Audio input '{self.device}' not found (available inputs: {names}); "
-                    "no microphone fallback is allowed. Install BlackHole 2ch, route UU audio "
-                    "into it, and see README.md"
-                )
-            if len(matches) != 1:
-                names = ", ".join(f"{_describe(mic).name} [{_describe(mic).id}]" for mic in matches)
-                raise AudioError(f"Audio input '{self.device}' is ambiguous: {names}; select an exact name or id")
-            microphone = matches[0]
-            self._name = _describe(microphone).name
-            self._thread = threading.Thread(target=self._produce, args=(microphone,), name="uu-fishing-audio", daemon=True)
+            system = platform.system()
+            if system == "Windows":
+                from .wasapi import open_loopback
+                capture = open_loopback(self.windows_device, self.block_seconds, self._stop)
+            elif system == "Darwin":
+                capture = _open_coreaudio(self.device, self.capture_rate, self.block_seconds)
+            else:
+                raise AudioError("实时采音仅支持 macOS 或 Windows；可用 WAV 离线识别")
+            self._thread = threading.Thread(target=self._produce, args=(capture,), name="uu-fishing-audio", daemon=True)
             self._thread.start()
         if not self._ready.wait(self.read_timeout):
             self._fail(AudioError(f"Audio input did not open within {self.read_timeout:g} seconds"))
         self._check()
 
-    def _produce(self, microphone: Any) -> None:
-        resampler = _StreamingResampler(self.capture_rate, self.sample_rate)
+    def _produce(self, capture: Any) -> None:
         try:
-            # Deliberately omit blocksize: forcing 4800 into CoreAudio's low-level
-            # buffer configuration can break the device on macOS/SoundCard.
-            with microphone.recorder(samplerate=self.capture_rate) as recorder:
+            with capture as raw:
+                self._name = raw.name
+                resampler = _StreamingResampler(raw.rate, self.sample_rate)
                 self._ready.set()
                 while not self._stop.is_set():
-                    captured = np.asarray(recorder.record(numframes=self._frames), dtype=np.float32)
-                    captured_at = time.monotonic()
+                    frame = raw.read()
                     if self._stop.is_set():
                         break
+                    if frame is None:
+                        raise AudioError("采音流意外结束")
+                    samples_in, captured_at = frame
+                    captured = np.asarray(samples_in, dtype=np.float32)
                     if captured.ndim == 2 and captured.shape[1] > 0:
                         captured = captured.mean(axis=1, dtype=np.float64).astype(np.float32)
                     if captured.ndim != 1 or not captured.size or not np.all(np.isfinite(captured)):
