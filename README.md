@@ -20,8 +20,9 @@ mkdir -p user_templates recordings
 
 ## 2. 声音、权限与游戏键位
 
-1. 在 UU 或 Windows App 启用远端声音播放。在 Mac「音频 MIDI 设置」创建包含 **BlackHole 2ch 和扬声器/耳机**的多输出设备，并设为系统输出。要只采集路由到 BlackHole 的声音，不要用物理麦克风代替。其它应用如果也被路由到 BlackHole，声音可能混入。
-2. 在「系统设置 → 隐私与安全」给**实际启动工具的终端**（如 Terminal 或 WezTerm）授予音频输入权限和控制目标应用所需的辅助功能权限。新版 macOS 若有按应用授权的 **System & App Protection Override**，只授权实际使用的 UU / Windows App；不要关闭系统防护或开启整机控制。GUI 不需要全局热键的输入监控权限。
+1. **先确认远程游戏有声，再切到 BlackHole。** 先让 Mac 用扬声器或耳机输出，在 UU 或 Windows App 中启用远端声音播放，确认在 Mac 上确实能听到《魔兽世界》的音效。如果听不到，先检查远端 Windows PC 的系统音频输出和游戏内的音频输出设备。选错设备时，声音可能没有传到 Mac，切到 BlackHole 也无法让工具识别到声音。
+2. 确认有声后，将 Mac 输出切换到 **BlackHole 2ch**。如果自己也要听，在 Mac「音频 MIDI 设置」创建包含 **BlackHole 2ch 和扬声器／耳机**的多输出设备，再选它作为系统输出。不要用物理麦克风代替；同样输出到 BlackHole 的其他应用也可能混入声音。
+3. 在「系统设置 → 隐私与安全」给**实际启动工具的终端**（如 Terminal 或 WezTerm）授予音频输入权限和控制目标应用所需的辅助功能权限。新版 macOS 若有按应用授权的 **System & App Protection Override**，只授权实际使用的 UU / Windows App；不要关闭系统防护或开启整机控制。GUI 不需要全局热键的输入监控权限。
 
 ### 游戏内准备（启动前必做）
 
@@ -61,7 +62,7 @@ mkdir -p user_templates recordings
 
 ## 排查与维护
 
-- 找不到声音：运行 `.venv/bin/python wow_fishing.py devices` 检查 BlackHole；`doctor` 可协助确认设备、模板和权限。定向发键与系统全局发键的授权不是一回事。
+- 找不到声音：先切回 Mac 扬声器或耳机，确认远程游戏有声。确认后再切到 BlackHole，运行 `.venv/bin/python wow_fishing.py devices` 检查设备；`doctor` 可协助确认设备、模板和权限。定向发键与系统全局发键的授权不是一回事。
 - 手按有效、程序按键无反应：先检查实际启动工具的终端是否取得对该远程客户端的定向控制权限。支持仅发一次的 `test-key`；默认预览，只有加 `--send` 才发键。
 - 日志：`logs/fishing.jsonl` 为滚动文件，上限 10 MB；`session_id` 区分运行。查看：`tail -F logs/fishing.jsonl`。日志、录音和鱼饵状态不应提交。
 - 源码位于 `uu_fishing/`，设置见 `config.toml`，`scripts/` 包含模板测试与 macOS 打包入口。仓库不提供编译好的 App。
