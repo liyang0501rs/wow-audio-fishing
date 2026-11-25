@@ -107,6 +107,7 @@ class _ButtonController:
         self._reels = 0  # Completed sessions, until the GUI process exits.
         self._score_text = ""
         self._next_score_at = 0.0
+        self.exit_requested = False
 
     def _retire_session(self) -> None:
         if self._session is not None:
@@ -115,6 +116,8 @@ class _ButtonController:
             self._session = None
 
     def click(self) -> tuple[str, str]:
+        if self.exit_requested:
+            return self.poll()
         if self._color in _ACTIVE_COLORS:
             # Honor the displayed stop action even if the worker just finished.
             assert self._session is not None
@@ -163,6 +166,12 @@ class _ButtonController:
             return "green", self._score_text
         return "orange", "" if reel_score is None else str(round(reel_score * 100))
 
+    def request_exit(self) -> None:
+        """Stop immediately; the native loop closes the window and joins the worker."""
+        self.exit_requested = True
+        if self._session is not None and not self._session.controls.stop_event.is_set():
+            self._session.controls.stop("浮窗右键双击退出")
+
     def close(self, reason: str) -> None:
         self._color = "red"
         if self._session is not None:
@@ -204,6 +213,11 @@ def _button_class(ak, objc):
             release = self.convertPoint_fromView_(event.locationInWindow(), None)
             if self._gesture.release(ak.NSPointInRect(release, self.bounds())):
                 self.uuClick_(self)
+
+        def rightMouseUp_(self, event):
+            release = self.convertPoint_fromView_(event.locationInWindow(), None)
+            if event.clickCount() == 2 and ak.NSPointInRect(release, self.bounds()):
+                self._controller.request_exit()
 
         @objc.python_method
         def render(self, display: tuple[str, str]) -> None:
@@ -320,7 +334,7 @@ def run_button_ui(run_session: _RunSession) -> None:
             app.finishLaunching()
             panel, button = _make_panel(ak, objc, controller)
             panel.orderFrontRegardless()  # No makeKey*, activate*, or focus transfer.
-        while not interrupted:
+        while not interrupted and not controller.exit_requested:
             with objc.autorelease_pool():
                 event = app.nextEventMatchingMask_untilDate_inMode_dequeue_(
                     ak.NSEventMaskAny, ak.NSDate.dateWithTimeIntervalSinceNow_(0.05),

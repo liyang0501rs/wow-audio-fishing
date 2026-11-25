@@ -78,6 +78,7 @@ def _run_window(controller: _ButtonController) -> None:
     display = controller.poll()
     palette = {"red": _rgb(223, 57, 62), "orange": _rgb(248, 157, 34), "green": _rgb(54, 197, 103)}
     gesture = _ButtonGesture()
+    right_double = False
     done = interrupted = False
     failure = None
 
@@ -114,7 +115,7 @@ def _run_window(controller: _ButtonController) -> None:
 
     @wnd_proc
     def handle(hwnd, message, wp, lp):
-        nonlocal done, failure
+        nonlocal done, failure, right_double
         try:
             if message == 0x0021:  # WM_MOUSEACTIVATE: receive the click without taking focus.
                 return 3
@@ -126,11 +127,26 @@ def _run_window(controller: _ButtonController) -> None:
                 return 0
             if message == 0x0215:  # WM_CAPTURECHANGED
                 gesture.release(False)
+                right_double = False
                 return 0
-            if message in (0x0201, 0x0200, 0x0202):
+            if message == 0x0204:  # WM_RBUTTONDOWN
+                right_double = False
+                return 0
+            if message == 0x0206:  # WM_RBUTTONDBLCLK (second down)
+                right_double = True
+                return 0
+            if message == 0x0205:  # WM_RBUTTONUP (finish inside the button)
+                x = c.c_short(lp & 0xffff).value
+                y = c.c_short((lp >> 16) & 0xffff).value
+                if right_double and 0 <= x < size and 0 <= y < size:
+                    controller.request_exit()
+                    done = True
+                right_double = False
+                return 0
+            if message in (0x0200, 0x0201, 0x0202, 0x0203):
                 point, rect = w.POINT(), w.RECT()
                 if cursor_pos(c.byref(point)) and get_rect(hwnd, c.byref(rect)):
-                    if message == 0x0201:
+                    if message in (0x0201, 0x0203):  # left down or second down with CS_DBLCLKS
                         gesture.press(point.x, point.y, rect.left, rect.top)
                         capture(hwnd)
                     elif gesture.origin is not None:
@@ -158,7 +174,8 @@ def _run_window(controller: _ButtonController) -> None:
 
     class_name = "UUFishingFloatingButton"
     arrow = _bind(user, "LoadCursorW", w.HANDLE, w.HINSTANCE, w.LPVOID)(None, 32512)
-    if not register(c.byref(WindowClass(0, handle, 0, 0, instance, None, arrow, None, None, class_name))):
+    # CS_DBLCLKS lets Win32 recognize the user's configured double-click timing.
+    if not register(c.byref(WindowClass(0x0008, handle, 0, 0, instance, None, arrow, None, None, class_name))):
         raise c.WinError(c.get_last_error())
     hwnd = None
     previous_handler = signal.signal(signal.SIGINT, interrupt)
